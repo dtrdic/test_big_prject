@@ -1,0 +1,186 @@
+workflows:
+  react-native-android:
+      name: Test big project
+      max_build_duration: 120
+      instance_type: mac_mini_m1
+      environment:
+        xcode: 14.2
+        android_signing:
+          - davidKeystore
+        groups:
+          - google_play_credentials
+        vars:
+          PACKAGE_NAME: "io.codemagic.dtrdic1"
+      triggering:
+        events:
+            - pull_request
+            - push
+        branch_patterns:
+        - pattern: "main"
+          include: true
+          source: false
+      scripts:
+        # - name: java 17 install
+        #   script: |
+        #     brew update
+        #     brew install openjdk@17
+        #     java --version
+        # - name: java 17 install
+        #   script: |
+        #     ./gradlew detekt -Dorg.gradle.java.home=/usr/local/opt/openjdk@17 #ovo je radilo čobanu
+        # - name: set Java 17 as default
+        #   script: | #ovo je radilo meni
+        #     echo 'export JAVA_HOME="/usr/local/opt/openjdk@17"' >> ~/.zshrc
+        #     echo 'export PATH="/usr/local/opt/openjdk@17/bin:$PATH"' >> ~/.zshrc
+        # - name: set Java 17 as default
+        #   script: |
+        #     export JAVA_HOME=/usr/local/opt/openjdk@17
+        #     export PATH="/usr/local/opt/openjdk@17/bin:$PATH"
+
+        # - name: java version
+        #   script: |
+        #     source ~/.zshrc
+        #     java --version
+        - name: Install npm dependencies
+          script: | 
+            npm install
+        - name: Set Android SDK location
+          script: | 
+            echo "sdk.dir=$ANDROID_SDK_ROOT" > "$CM_BUILD_DIR/android/local.properties"
+        - name: Build Android release
+          script: |
+            LATEST_GOOGLE_PLAY_BUILD_NUMBER=$(google-play get-latest-build-number --package-name "$PACKAGE_NAME")
+            if [ -z LATEST_BUILD_NUMBER ]; then
+              UPDATED_BUILD_NUMBER=$BUILD_NUMBER
+            else
+              UPDATED_BUILD_NUMBER=$(($LATEST_GOOGLE_PLAY_BUILD_NUMBER + 1))
+            fi
+            cd android 
+            ./gradlew bundleRelease \
+              -PversionCode=$UPDATED_BUILD_NUMBER \
+              -PversionName=1.0.$UPDATED_BUILD_NUMBER
+      artifacts:
+          - android/app/build/outputs/**/*.aab
+      publishing:
+        email:
+          recipients:
+            - david@nevercode.io
+          notify:
+            success: true
+            failure: false
+        google_play:
+          credentials: $GCLOUD_SERVICE_ACCOUNT_CREDENTIALS
+          track: internal
+          submit_as_draft: true
+
+  react-native-ios:
+      name: React Native iOS 
+      max_build_duration: 120
+      instance_type: mac_mini_m1
+      integrations:
+        app_store_connect: DavidAPIkey
+      environment:
+        ios_signing:
+          distribution_type: app_store
+          bundle_identifier: io.codemagic.dtrdic1
+        vars:
+          XCODE_WORKSPACE: "AwesomeProject3.xcworkspace" # <-- Put the name of your Xcode workspace here
+          XCODE_SCHEME: "AwesomeProject3" # <-- Put the name of your Xcode scheme here
+          APP_ID: 6452725607 # <-- Put the app id number here. This is found in App Store Connect > App > General > App Information
+        cocoapods: default
+      # triggering:
+      #   events:
+      #       - push
+      scripts:
+          - name: HOME
+            script: |
+              echo $HOME
+              echo $CM_BUILD_DIR
+          - name: Install npm dependencies
+            script: |
+              npm install
+          - name: Install CocoaPods dependencies
+            script: |
+              cd ios && pod install
+          - name: Set up code signing settings on Xcode project
+            script: |
+              xcode-project use-profiles --project ios/*.xcodeproj
+          - name: Set Info.plist values
+            script: |
+              # This allows publishing without manually answering the question about encryption 
+              PLIST=$CM_BUILD_DIR/$XCODE_SCHEME/Info.plist
+              PLIST_BUDDY=/usr/libexec/PlistBuddy
+              $PLIST_BUDDY -c "Add :ITSAppUsesNonExemptEncryption bool false" $PLIST
+          - name: Increment build number 
+            script: |
+              cd $CM_BUILD_DIR/ios
+              # agvtool new-version -all 1.0.$(($BUILD_NUMBER + 1)).beta.2
+              # agvtool new-marketing-version 1.0.$(($BUILD_NUMBER + 1)).beta.2
+
+              agvtool new-version -all $(($BUILD_NUMBER + 1))
+          - name: Build ipa for distribution and version
+            script: |
+              xcode-project build-ipa \
+              --workspace "$CM_BUILD_DIR/ios/$XCODE_WORKSPACE" \
+              --scheme "$XCODE_SCHEME" \
+              --archive-flags="-destination 'generic/platform=iOS'"              
+      artifacts:
+          - build/ios/ipa/*.ipa
+          - /tmp/xcodebuild_logs/*.log
+          - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.app
+          - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.dSYM
+      publishing:
+        email:
+          recipients:
+            - dtrdic2@gmail.com
+          notify:
+            success: true
+            failure: false
+        app_store_connect: #kad zakomentiram onda publisha bez greske
+          auth: integration
+
+
+  react-native-ios-simulator-app:
+      name: React Native iOS simulator app
+      max_build_duration: 120
+      instance_type: mac_pro
+      environment:
+        vars:
+          XCODE_WORKSPACE: "ios/AwesomeProject3.xcworkspace" # <-- Put the name of your Xcode workspace here
+          XCODE_SCHEME: "AwesomeProject3" # <-- Put the name of your Xcode scheme here
+          APP_ID: 6452725607 # <-- Put the app id number here. This is found in App Store Connect > App > General > App Information
+        xcode: 14.2
+      scripts:
+
+          - name: Install npm dependencies
+            script: |
+              npm install
+          - name: Install CocoaPods dependencies
+            script: |
+                cd ios && pod install
+          - name: Build ipa for distribution
+            script: |
+              xcodebuild build \
+              -workspace "$XCODE_WORKSPACE" \
+              -scheme "$XCODE_SCHEME" \
+              -sdk iphonesimulator \
+              -destination 'platform=iOS Simulator,name=iPhone 12 Pro,OS=14.5' \
+              -configuration Debug \
+              CODE_SIGN_IDENTITY="" \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGNING_ALLOWED=NO 
+      artifacts:
+          - $HOME/Safetyio.Local.Monitoring.iOS/bin/iPhoneSimulator/Debug/Safetyio.Local.Monitoring.iOS.app
+          - /tmp/xcodebuild_logs/*.log
+          - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.app
+          - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.dSYM
+      publishing:
+        email:
+          recipients:
+            - dtrdic2@gmail.com
+          notify:
+            success: true
+            failure: false
+
+
+
